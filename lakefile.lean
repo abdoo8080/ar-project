@@ -1,15 +1,15 @@
 import Lake
 open Lake DSL
 
-package smtArray {
+package A {
   -- add package configuration options here
 }
 
-lean_lib SmtArray {
+lean_lib A {
   -- add library configuration options here
 }
 
 @[default_target]
-lean_exe array {
+lean_exe a {
   root := `Main
 }
