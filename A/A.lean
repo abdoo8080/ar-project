@@ -45,7 +45,7 @@ example {a b : A I E} : a.write i (b.read i) = b.write i (a.read i) → a ≠ b 
   have h5 : a' = b' := h1 ▸ h2 ▸ h3 ▸ h4 ▸ h0
   lem h1 h2 h3 h4 h5 h6
 where
-  lem {a a' b b' : A I E} {v w : E} : a' = write a i v → b' = write b i w → v = read b i → w = read a i → a' = b' → a ≠ b → False :=
+  lem {a a' b b' : A I E} {v w : E} : a' = a.write i v → b' = b.write i w → v = b.read i → w = a.read i → a' = b' → a ≠ b → False :=
     fun h1 h2 h3 h4 h5 h6 =>
       have ⟨k, h9⟩ : ∃i, a.read i ≠ b.read i := ext h6
       let x := read a k
