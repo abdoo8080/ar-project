@@ -36,11 +36,6 @@ end Lean.Expr
 
 namespace Solver
 
-structure State where
-  lits : List Expr := []
-
-abbrev SolverM := StateT State MetaM
-
 def newHypName (mv : MVarId) : MetaM Name := do
   return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `h
 
@@ -50,33 +45,6 @@ def newVarName (mv : MVarId) : MetaM Name := do
 def newMVarName (mv : MVarId) : MetaM Name := do
   return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `m
 
-def applyRfl (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
-  if (← fv.getType).isAppOf ``A then
-      let p ← Meta.mkAppM ``Eq.refl #[.fvar fv]
-      let t ← Meta.inferType p
-      return (← (← mv.assert (← newHypName mv) t p).intro1P).snd
-  return mv
-
-def applyRfls (mv : MVarId) : MetaM MVarId := do
-  let mut mv := mv
-  for fv in (← mv.getDecl).lctx.getFVarIds do
-    mv ← applyRfl mv fv
-  return mv
-
-def applySymm (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
-  if let some (_, lhs, rhs) := (← fv.getType).eq? then
-    if lhs != rhs && lhs.isFVar && rhs.isFVar then
-      let t ← Meta.mkAppM ``Eq #[rhs, lhs]
-      let p ← Meta.mkAppM ``Eq.symm #[.fvar fv]
-      return (← (← mv.assert (← newHypName mv) t p).intro1P).snd
-  return mv
-
-def applySymms (mv : MVarId) : MetaM MVarId := do
-  let mut mv := mv
-  for fv in (← mv.getDecl).lctx.getFVarIds do
-    mv ← applySymm mv fv
-  return mv
-
 def applyRIntro1s (mv : MVarId) : MetaM MVarId := do
   let mut mv := mv
   for fv in (← mv.getDecl).lctx.getFVarIds do
@@ -84,20 +52,18 @@ def applyRIntro1s (mv : MVarId) : MetaM MVarId := do
   return mv
 where
   applyRIntro1 (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
-    match ← fv.getType with
-    | (.app (.app (.app (.const ``Eq _) _) _)
-            (.app (.app (.app (.app (.app (.app (.const ``A.write _) _) _) _) _) _) _)) =>
+    if (← fv.getType).eqWrite? matches some _ then
       let p ← Meta.mkAppM ``A.r_intro1 #[.fvar fv]
       let t ← Meta.inferType p
       let (_, mv) ← (← mv.assert (← newHypName mv) t p).intro1P
-      return mv
-    | _ => return mv
+      return (← (← mv.assert (← newHypName mv) t p).intro1P).snd
+    return mv
 
 abbrev CacheList := List (Expr × Expr × Expr × Expr)
 
 def applyRIntro2 (mv : MVarId) (fv1 : FVarId) (fv2 : FVarId) (fv3 : FVarId) : StateT CacheList MetaM (List MVarId) := mv.withContext do
   match (← fv1.getType).eq?, (← fv2.getType).eqWrite?, (← fv3.getType).eqRead? with
-  | some (_, d, e), some (a, b, i, v), some (x, c, j) =>
+  | some (_, d, e), some (a, b, i, _), some (_, c, j) =>
     if (i != j) && (d == a || d == b) && e == c then
       if !(← get).contains (a, b, i, j) then
         modify ((a, b, i, j) :: (b, a, i, j) :: ·)
@@ -172,8 +138,7 @@ partial def applyRIntro2s (cache : CacheList) (mv : MVarId) : MetaM (List MVarId
     return (← applyRIntro2s cache mvs[0]!) ++ (← applyRIntro2s cache mvs[1]!)
 
 def applyExt (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
-  match ← fv.getType with
-  | (.app (.app (.app (.const ``Ne _) _) _) _) =>
+  if (← fv.getType).ne? matches some _ then
     let p ← Meta.mkAppM ``A.ext #[.fvar fv]
     let t ← Meta.inferType p
     let mut (fv, mv) ← (← mv.assert (← newHypName mv) t p).intro1P
@@ -181,14 +146,13 @@ def applyExt (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
     (_, _, fv, mv) ← replaceLHS mv fv
     (_, _, fv, mv) ← replaceRHS mv fv
     return mv
-  | _ => return mv
+  return mv
 where
   introExists (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × MVarId) := do
-    let #[sg] ← mv.cases fv #[⟨false, [← newVarName mv, ← newHypName mv]⟩] | throwError "Exists intro failed."
+    let #[sg] ← mv.cases fv #[⟨false, [← newVarName mv, ← newHypName mv]⟩] | throwError "exists intro failed."
     return (sg.fields[0]!.fvarId!, sg.fields[1]!.fvarId!, sg.mvarId)
   replaceLHS (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × FVarId × MVarId) := do
-    let lhs ← getLHS fv mv
-    let rhs ← getRHS fv mv
+    let some (_, lhs, rhs) := (← mv.withContext fv.getType).ne? | throwError "replacing LHS of {Expr.fvar fv} failed."
     let (x, mv) ← (← mv.assertExt (← newVarName mv) (← Meta.inferType lhs) lhs).intro1P
     let (xfv, mv) ← mv.intro1P
     mv.withContext do
@@ -200,8 +164,7 @@ where
     xmv.refl
     return (x, xfv, fv, mv)
   replaceRHS (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × FVarId × MVarId) := do
-    let lhs ← getLHS fv mv
-    let rhs ← getRHS fv mv
+    let some (_, lhs, rhs) := (← mv.withContext fv.getType).ne? | throwError "replacing RHS of {Expr.fvar fv} failed."
     let (y, mv) ← (← mv.assertExt (← newVarName mv) (← Meta.inferType rhs) rhs).intro1P
     let (yfv, mv) ← mv.intro1P
     mv.withContext do
@@ -212,14 +175,6 @@ where
     let ymv ← ymv.replaceTargetEq r.eNew r.eqProof
     ymv.refl
     return (y, yfv, fv, mv)
-  getLHS (fv : FVarId) (mv : MVarId) : MetaM Expr := mv.withContext do
-    let p ← fv.getType
-    let (.app (.app (.app (.const ``Ne _) _) lhs) _) := p | throwError "Something went wrong..."
-    return lhs
-  getRHS (fv : FVarId) (mv : MVarId) : MetaM Expr := mv.withContext do
-    let p ← fv.getType
-    let (.app (.app (.app (.const ``Ne _) _) _) rhs) := p | throwError "Something went wrong..."
-    return rhs
 
 def applyExts (mv : MVarId) : MetaM MVarId := do
   let mut mv := mv
