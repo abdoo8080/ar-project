@@ -1,4 +1,4 @@
-import A
+import LMT
 
 variable {I} [Nonempty I] {E} [Nonempty E] [Nonempty (A I E)]
 

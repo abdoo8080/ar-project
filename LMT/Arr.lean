@@ -1,10 +1,14 @@
-import A.A
-import A.EUF
+import LMT.A
+import LMT.Base
+import LMT.EUF
 import Lean
 
-open Lean Elab Tactic
-
 namespace Lean.Expr
+
+@[inline] def eqFV? (e : Expr) : Option (Expr × Expr) :=
+  match e.eq? with
+  | some (_, v, .fvar y) => some (v, .fvar y)
+  | _ => none
 
 @[inline] def read? (e : Expr) : Option (Expr × Expr) :=
   if e.isAppOfArity `A.read 5 then
@@ -34,34 +38,31 @@ namespace Lean.Expr
 
 end Lean.Expr
 
-namespace Solver
+namespace Lean.Meta
 
-def newHypName (mv : MVarId) : MetaM Name := do
-  return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `h
+abbrev ArrM := BaseM
 
-def newVarName (mv : MVarId) : MetaM Name := do
-  return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `x
+namespace Arr
 
-def newMVarName (mv : MVarId) : MetaM Name := do
-  return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `m
+open Lean Elab Tactic
 
-def applyRIntro1s (mv : MVarId) : MetaM MVarId := do
+def applyRIntro1s (mv : MVarId) : ArrM MVarId := do
   let mut mv := mv
   for fv in (← mv.getDecl).lctx.getFVarIds do
     mv ← applyRIntro1 mv fv
   return mv
 where
-  applyRIntro1 (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
+  applyRIntro1 (mv : MVarId) (fv : FVarId) : ArrM MVarId := mv.withContext do
     if (← fv.getType).eqWrite? matches some _ then
       let p ← Meta.mkAppM ``A.r_intro1 #[.fvar fv]
       let t ← Meta.inferType p
-      let (_, mv) ← (← mv.assert (← newHypName mv) t p).intro1P
-      return (← (← mv.assert (← newHypName mv) t p).intro1P).snd
+      let (_, mv) ← (← mv.assert (← Base.newHypName) t p).intro1P
+      return (← (← mv.assert (← Base.newHypName) t p).intro1P).snd
     return mv
 
 abbrev CacheList := List (Expr × Expr × Expr × Expr)
 
-def applyRIntro2 (mv : MVarId) (fv1 : FVarId) (fv2 : FVarId) (fv3 : FVarId) : StateT CacheList MetaM (List MVarId) := mv.withContext do
+def applyRIntro2 (mv : MVarId) (fv1 : FVarId) (fv2 : FVarId) (fv3 : FVarId) : StateT CacheList ArrM (List MVarId) := mv.withContext do
   match (← fv1.getType).eq?, (← fv2.getType).eqWrite?, (← fv3.getType).eqRead? with
   | some (_, d, e), some (a, b, i, _), some (_, c, j) =>
     if (i != j) && (d == a || d == b) && e == c then
@@ -72,10 +73,10 @@ def applyRIntro2 (mv : MVarId) (fv1 : FVarId) (fv2 : FVarId) (fv3 : FVarId) : St
         let mut omv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Or #[eq1, eq2])).mvarId!
         let p ← Meta.mkAppM ``A.r_intro2 #[.mvar omv, .fvar fv2, .fvar fv3]
         let t ← Meta.inferType p
-        let (fv, mv) ← (← mv.assert (← newHypName mv) t p).intro1P
+        let (fv, mv) ← (← mv.assert (← Base.newHypName) t p).intro1P
         omv := (← omv.apply (mkConst (if d == a then ``Or.inl else ``Or.inr)))[0]!
         omv.assign (.fvar fv1)
-        let #[sg1, sg2] ← mv.cases fv #[⟨false, [← newHypName mv]⟩, ⟨false, [← newHypName mv]⟩] |
+        let #[sg1, sg2] ← mv.cases fv #[⟨false, [← Base.newHypName]⟩, ⟨false, [← Base.newHypName]⟩] |
           throwError "RIntro2 case split failed."
         let mv1 := sg1.mvarId
         let mv2 := sg2.mvarId
@@ -86,15 +87,15 @@ def applyRIntro2 (mv : MVarId) (fv1 : FVarId) (fv2 : FVarId) (fv3 : FVarId) : St
     return []
   | _, _, _ => return []
 where
-  findFVOrCreate (mv : MVarId) (e : Expr) : MetaM (FVarId × FVarId × MVarId) := mv.withContext do
+  findFVOrCreate (mv : MVarId) (e : Expr) : ArrM (FVarId × FVarId × MVarId) := mv.withContext do
     for fv in (← mv.getDecl).lctx.getFVarIds do
       if let some (_, x, e') := (← fv.getType).eq? then
         if e' == e then
           return (x.fvarId!, fv, mv)
-    let (x, mv) ← (← mv.assertExt (← newVarName mv) (← Meta.inferType e) e).intro1P
+    let (x, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType e) e).intro1P
     let (fv, mv) ← mv.intro1P
     return (x, fv, mv)
-  replaceLHS (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
+  replaceLHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
     let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
     let (x, xfv, mv) ← findFVOrCreate mv lhs
     mv.withContext do
@@ -105,7 +106,7 @@ where
     let xmv ← xmv.replaceTargetEq r.eNew r.eqProof
     xmv.refl
     return (x, xfv, fv, mv)
-  replaceRHS (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
+  replaceRHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
     let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
     let (y, yfv, mv) ← findFVOrCreate mv rhs
     mv.withContext do
@@ -117,18 +118,17 @@ where
     ymv.refl
     return (y, yfv, fv, mv)
 
-def product (xs : List α) (ys : List β) : List (α × β) := Id.run do
-  let mut zs := []
-  for x in xs do
-    for y in ys do
-      zs := (x, y) :: zs
-  return zs
+def product (xs : List α) (ys : List β) : List (α × β) :=
+  (xs.map (fun x => ys.map (fun y => (x, y)))).join
 
-partial def applyRIntro2s (cache : CacheList) (mv : MVarId) : MetaM (List MVarId) := do
+partial def applyRIntro2s (cache : CacheList) (mv : MVarId) : ArrM (List MVarId) := do
   let fvs := (← mv.getDecl).lctx.getFVarIds.toList
+  let eqFVs ← mv.withContext (eqFVs fvs)
+  let eqReads ← mv.withContext (eqReads fvs)
+  let eqWrites ← mv.withContext (eqWrites fvs)
   let mut mvs := []
   let mut cache := cache
-  for (fv1, fv2, fv3) in product fvs (product fvs fvs) do
+  for (fv1, fv2, fv3) in product eqFVs (product eqWrites eqReads) do
     (mvs, cache) ← StateT.run (applyRIntro2 mv fv1 fv2 fv3) cache
     if !mvs.isEmpty then
       break
@@ -136,24 +136,28 @@ partial def applyRIntro2s (cache : CacheList) (mv : MVarId) : MetaM (List MVarId
     return [mv]
   else
     return (← applyRIntro2s cache mvs[0]!) ++ (← applyRIntro2s cache mvs[1]!)
+where
+  eqFVs (fvs : List FVarId) := fvs.filterM (fun fv => return (← fv.getType).eqFV?.toBool)
+  eqReads (fvs : List FVarId) := fvs.filterM (fun fv => return (← fv.getType).eqRead?.toBool)
+  eqWrites (fvs : List FVarId) := fvs.filterM (fun fv => return (← fv.getType).eqWrite?.toBool)
 
-def applyExt (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
+def applyExt (mv : MVarId) (fv : FVarId) : ArrM MVarId := mv.withContext do
   if (← fv.getType).ne? matches some _ then
     let p ← Meta.mkAppM ``A.ext #[.fvar fv]
     let t ← Meta.inferType p
-    let mut (fv, mv) ← (← mv.assert (← newHypName mv) t p).intro1P
+    let mut (fv, mv) ← (← mv.assert (← Base.newHypName) t p).intro1P
     (_, fv, mv) ← introExists mv fv
     (_, _, fv, mv) ← replaceLHS mv fv
     (_, _, fv, mv) ← replaceRHS mv fv
     return mv
   return mv
 where
-  introExists (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × MVarId) := do
-    let #[sg] ← mv.cases fv #[⟨false, [← newVarName mv, ← newHypName mv]⟩] | throwError "exists intro failed."
+  introExists (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × MVarId) := do
+    let #[sg] ← mv.cases fv #[⟨false, [← Base.newVarName, ← Base.newHypName]⟩] | throwError "exists intro failed."
     return (sg.fields[0]!.fvarId!, sg.fields[1]!.fvarId!, sg.mvarId)
-  replaceLHS (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × FVarId × MVarId) := do
+  replaceLHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := do
     let some (_, lhs, rhs) := (← mv.withContext fv.getType).ne? | throwError "replacing LHS of {Expr.fvar fv} failed."
-    let (x, mv) ← (← mv.assertExt (← newVarName mv) (← Meta.inferType lhs) lhs).intro1P
+    let (x, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType lhs) lhs).intro1P
     let (xfv, mv) ← mv.intro1P
     mv.withContext do
     let xt ← Meta.mkAppM ``Ne #[.fvar x, rhs]
@@ -163,9 +167,9 @@ where
     let xmv ← xmv.replaceTargetEq r.eNew r.eqProof
     xmv.refl
     return (x, xfv, fv, mv)
-  replaceRHS (mv : MVarId) (fv : FVarId) : MetaM (FVarId × FVarId × FVarId × MVarId) := do
+  replaceRHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := do
     let some (_, lhs, rhs) := (← mv.withContext fv.getType).ne? | throwError "replacing RHS of {Expr.fvar fv} failed."
-    let (y, mv) ← (← mv.assertExt (← newVarName mv) (← Meta.inferType rhs) rhs).intro1P
+    let (y, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType rhs) rhs).intro1P
     let (yfv, mv) ← mv.intro1P
     mv.withContext do
     let yt ← Meta.mkAppM ``Ne #[lhs, .fvar y]
@@ -176,30 +180,44 @@ where
     ymv.refl
     return (y, yfv, fv, mv)
 
-def applyExts (mv : MVarId) : MetaM MVarId := do
+def applyExts (mv : MVarId) : ArrM MVarId := do
   let mut mv := mv
   for fv in (← mv.getDecl).lctx.getFVarIds do
     mv ← applyExt mv fv
   return mv
 
+def arrClosure (mv : MVarId) : ArrM (List MVarId) := do
+  let mv ← (EUF.congrClosure mv).run' { }
+  let mv ← applyExts mv
+  let mv ← applyRIntro1s mv
+  let mvs' ← applyRIntro2s [] mv
+  let mut mvs := []
+  for mv' in mvs' do
+    let mv ← (EUF.congrClosure mv').run' { }
+    mvs := mv :: mvs
+  return mvs
+
+end Arr
+
+def arrClosure (mv : MVarId) : MetaM (List MVarId) := (Arr.arrClosure mv).run' { mv := mv }
+
+private def newHypName (mv : MVarId) : MetaM Name := do
+  return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `hds
+
 syntax (name := arr) "arr" : tactic
 
+open Elab Tactic in
 @[tactic arr] def evalArr : Tactic := fun _ => do
   let mut mv ← Tactic.getMainGoal
   while (← mv.getType).isArrow do
     (_, mv) ← mv.intro (← newHypName mv)
-  mv ← EUF.congrClosure mv
-  mv ← applyExts mv
-  mv ← applyRIntro1s mv
-  Tactic.replaceMainGoal [mv]
-  let mvs ← applyRIntro2s [] mv
-  let mut mvs' := []
-  for mv' in mvs do
-    let mv' ← EUF.congrClosure mv'
+  let mvs' ← arrClosure mv
+  let mut mvs := []
+  for mv' in mvs' do
     try
       mv'.contradiction
     catch _ =>
-      mvs' := mv' :: mvs'
-  Tactic.replaceMainGoal mvs'
+      mvs := mv' :: mvs
+  Tactic.replaceMainGoal mvs
 
-end Solver
+end Lean.Meta
