@@ -4,6 +4,16 @@ import Lean
 open Lean in
 def Lean.DisjointSet := HashMap FVarId (FVarId × Expr)
 
+private def Lean.DisjointSet.beq (lhs rhs : DisjointSet) : Bool := Id.run do
+  let (_, flag) ← lhs.forM predicate true
+  return flag
+where
+  predicate (k : FVarId) (v : FVarId × Expr) : StateT Bool Id Unit := do
+    if rhs.find? k != some v then
+      set false
+
+instance : BEq Lean.DisjointSet := ⟨Lean.DisjointSet.beq⟩
+
 namespace Lean.Meta
 
 open Lean
@@ -112,7 +122,11 @@ def congrClosure (mv : MVarId) : EUFM MVarId := mv.withContext do
         union lhs.fvarId! rhs.fvarId! (.fvar fv)
       else
         posEqns := fv :: posEqns
+  let mut ds := (← get).ds
   congrs posEqns
+  while (← get).ds != ds do
+    ds := (← get).ds
+    congrs posEqns
   mv ← updateCtx mv
   return mv
 where
