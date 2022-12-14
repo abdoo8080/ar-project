@@ -32,14 +32,13 @@ match Classical.em (¬p) with
 | Or.inl np => fun hp => absurd hp np 
 | Or.inr nnp => fun _ => nnp⟩ 
 
-theorem r_intro1 {a b : A I E}: a = b.write i v → v = a.read i := 
-  fun h => h ▸ (fun h1 => h1 ▸ rfl) rw1
+theorem r_intro1 {a b : A I E}: a = b.write i v → v = a.read i :=
+  fun h => h ▸ Eq.symm rw1
 
-
-theorem r_intro2 {a b c : A I E} : a = c ∨ b = c → a = b.write i v → x = c.read j → i = j ∨ a.read j = b.read j := 
-  fun _ h2 _ => match Classical.em (i = j) with
-  | Or.inl g1 => Or.inl g1
-  | Or.inr g1 => Or.inr (h2 ▸ rw2 g1)
+theorem r_intro2 {a b c : A I E} : a = c ∨ b = c → a = b.write i v → x = c.read j → i = j ∨ a.read j = b.read j :=
+  fun _ hw _ => match Classical.em (i = j) with
+  | Or.inl he => Or.inl he
+  | Or.inr hne => Or.inr (hw ▸ rw2 hne)
 
 theorem ext {a b : A I E} : a ≠ b → ∃i, a.read i ≠ b.read i := fun hne =>
   double_neg (p := ∃ i, read a i ≠ read b i) ▸
