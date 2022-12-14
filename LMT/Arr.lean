@@ -5,6 +5,13 @@ import Lean
 
 namespace Lean.Expr
 
+@[inline] def eqne? (e : Expr) : Option (Expr × Expr × Expr) :=
+  match e.eq? with
+  | some (t, lhs, rhs) => some (t, lhs, rhs)
+  | _ => match e.ne? with
+    | some (t, lhs, rhs) => some (t, lhs, rhs)
+    | _ => none
+
 @[inline] def eqFV? (e : Expr) : Option (Expr × Expr) :=
   match e.eq? with
   | some (_, v, .fvar y) => some (v, .fvar y)
@@ -204,78 +211,96 @@ def arrClosure (mv : MVarId) : MetaM (List MVarId) := (Arr.arrClosure mv).run' {
 private def newHypName (mv : MVarId) : MetaM Name := do
   return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `hds
 
-
-
-
-
-
-
+private def newVarName (mv : MVarId) : MetaM Name := do
+  return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `x
 
 def flat (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
-  let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
-  logInfo m!"LHS := {lhs}"
-  logInfo m!"RHS := {rhs}"
-  
--- where
---   findFVOrCreate (mv : MVarId) (e : Expr) : ArrM (FVarId × FVarId × MVarId) := mv.withContext do
---     for t in e.getAppArgs do
---       let (x, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType t) t).intro1P
---       let (fv, mv) ← mv.intro1P
---       return (x, fv, mv)
---   replaceLHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
---     let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
---     let (x, xfv, mv) ← findFVOrCreate mv lhs
---     mv.withContext do
---     let xt ← Meta.mkAppM ``Eq #[.fvar x, rhs]
---     let xmv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Eq #[← fv.getType, xt])).mvarId!
---     let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv xt (.mvar xmv)
---     let r ← xmv.rewrite (← xmv.getType) (.fvar xfv)
---     let xmv ← xmv.replaceTargetEq r.eNew r.eqProof
---     xmv.refl
---     return (x, xfv, fv, mv)
-  
--- where
---   loop (mv : MVarId) (e : Expr) : MVarId := mv.withContext do
---     for t in e.getAppArgs do
---       if t.isApp then
---         let (x, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType t) t).intro1P
---         let (fv, mv) ← mv.intro1P
---         let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv xt (.mvar xmv)
---         let r ← xmv.rewrite (← xmv.getType) (.fvar xfv)
---         return loop mv
---       else
---         return _
-        
-
---         return mv
-
-
-
-
-  let mut current_lhs := lhs
-  let mut next := lhs.getAppArgs[0]!
-  while current_lhs.isApp do
-    let ar := current_lhs.getAppArgs
-    for t in ar do
-      current_lhs := t
-    
-      logInfo m! "{current_lhs}"
-      
-    
-
-
-
-
-  
-  
-  
-    
+  let fvt ← fv.getType
+  if fvt.eqne?.isNone then
+    return mv
+  let (fv, mv) ← replaceLHS mv fv
+  let (_, mv) ← if fvt.eq?.toBool then replaceRHSeq mv fv else replaceRHSne mv fv
   return mv
-  
+where
+  findFV? (mv : MVarId) (e : Expr) : MetaM (Option (FVarId × FVarId × MVarId)) := mv.withContext do
+    for fv in (← mv.getDecl).lctx.getFVarIds do
+      if let some (_, x, e') := (← fv.getType).eq? then
+        if e' == e then
+          return some (x.fvarId!, fv, mv)
+    return none
+  findFVOrCreate (mv : MVarId) (e : Expr) : MetaM (FVarId × FVarId × MVarId) := mv.withContext do
+    for fv in (← mv.getDecl).lctx.getFVarIds do
+      if let some (_, x, e') := (← fv.getType).eq? then
+        if e' == e then
+          return (x.fvarId!, fv, mv)
+    let (x, mv) ← (← mv.assertExt (← newVarName mv) (← Meta.inferType e) e).intro1P
+    let (fv, mv) ← mv.intro1P
+    return (x, fv, mv)
+  replaceLHS (mv : MVarId) (fv : FVarId) : MetaM (FVarId × MVarId) := mv.withContext do
+    let some (_, lhs, _) := (← fv.getType).eqne? | throwError "something went wrong..."
+    if lhs.isFVar then
+      return (fv, mv)
+    let (_, xfv, mv) ← findFVOrCreate mv lhs
+    mv.withContext do
+    let r ← mv.rewrite (← fv.getType) (.fvar xfv) true (.pos [1])
+    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
+    return (fv, mv)
+  replaceRHSne (mv : MVarId) (fv : FVarId) : MetaM (FVarId × MVarId) := mv.withContext do
+    let some (_, _, rhs) := (← fv.getType).eqne? | throwError "something went wrong..."
+    if rhs.isFVar then
+      return (fv, mv)
+    let (_, yfv, mv) ← findFVOrCreate mv rhs
+    mv.withContext do
+    let r ← mv.rewrite (← fv.getType) (.fvar yfv) true (.pos [1])
+    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
+    return (fv, mv)
+  replaceRHSeq (mv : MVarId) (fv : FVarId) : MetaM (FVarId × MVarId) := mv.withContext do
+    let some (_, _, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
+    if rhs.isFVar then
+      return (fv, mv)
+    if let some (_, yfv, mv) ← findFV? mv rhs then
+      if yfv != fv then
+        return ← mv.withContext do
+        let r ← mv.rewrite (← fv.getType) (.fvar yfv) true (.pos [1])
+        let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
+        return (fv, mv)
+    if isAtom rhs then
+      return (fv, mv)
+    let args := rhs.getAppArgs
+    let mut fv := fv
+    let mut mv := mv
+    for arg in args do
+      if !arg.isApp then
+        continue
+      let (_, yfv, mv') ← findFVOrCreate mv arg
+      mv := mv'
+      (fv, mv) ← mv.withContext do
+      let r ← mv.rewrite (← fv.getType) (.fvar yfv) true (.pos [1])
+      let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
+      return (fv, mv)
+    return (fv, mv)
+  isAtom (e : Expr) : Bool := Id.run do
+    if e.isFVar then
+      return true
+    if !e.isApp then
+      return false
+    let mut flag := true
+    for arg in e.getAppArgs do
+      if !arg.isFVar then
+        flag := false
+    return flag
 
-
-
-
+def flats (mv : MVarId) : MetaM MVarId := do
+  let mut i := 0
+  let mut mv' := mv
+  let mut mv := mv
+  while i < (← mv.getDecl).lctx.getFVarIds.size do
+    mv ← flat mv (← mv.getDecl).lctx.getFVarIds[i]!
+    i := i + 1
+    if mv' != mv then
+      mv' := mv
+      i := 0
+  return mv
 
 syntax (name := arr) "arr" : tactic
 
@@ -284,18 +309,14 @@ open Elab Tactic in
   let mut mv ← Tactic.getMainGoal
   while (← mv.getType).isArrow do
     (_, mv) ← mv.intro (← newHypName mv)
-  -- let mvs' ← arrClosure mv
-  -- let mut mvs := []
-  -- for mv' in mvs' do
-  --   try
-  --     mv'.contradiction
-  --   catch _ =>
-  --     mvs := mv' :: mvs
-  -- Tactic.replaceMainGoal mvs
-  for fv in (← mv.getDecl).lctx.getFVarIds do
-    mv.withContext do
-    logInfo m!"{Expr.fvar fv}" 
-  logInfo m!"Array size {Lean.mkNatLit (← mv.getDecl).lctx.getFVarIds.size}"
-  mv ← flat mv (← mv.getDecl).lctx.getFVarIds[9]!
-  Tactic.replaceMainGoal [mv]
+  mv ← flats mv
+  let mvs' ← arrClosure mv
+  let mut mvs := []
+  for mv' in mvs' do
+    try
+      mv'.contradiction
+    catch _ =>
+      mvs := mv' :: mvs
+  Tactic.replaceMainGoal mvs
+
 end Lean.Meta
