@@ -204,6 +204,79 @@ def arrClosure (mv : MVarId) : MetaM (List MVarId) := (Arr.arrClosure mv).run' {
 private def newHypName (mv : MVarId) : MetaM Name := do
   return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `hds
 
+
+
+
+
+
+
+
+def flat (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
+  let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
+  logInfo m!"LHS := {lhs}"
+  logInfo m!"RHS := {rhs}"
+  
+-- where
+--   findFVOrCreate (mv : MVarId) (e : Expr) : ArrM (FVarId × FVarId × MVarId) := mv.withContext do
+--     for t in e.getAppArgs do
+--       let (x, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType t) t).intro1P
+--       let (fv, mv) ← mv.intro1P
+--       return (x, fv, mv)
+--   replaceLHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
+--     let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
+--     let (x, xfv, mv) ← findFVOrCreate mv lhs
+--     mv.withContext do
+--     let xt ← Meta.mkAppM ``Eq #[.fvar x, rhs]
+--     let xmv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Eq #[← fv.getType, xt])).mvarId!
+--     let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv xt (.mvar xmv)
+--     let r ← xmv.rewrite (← xmv.getType) (.fvar xfv)
+--     let xmv ← xmv.replaceTargetEq r.eNew r.eqProof
+--     xmv.refl
+--     return (x, xfv, fv, mv)
+  
+-- where
+--   loop (mv : MVarId) (e : Expr) : MVarId := mv.withContext do
+--     for t in e.getAppArgs do
+--       if t.isApp then
+--         let (x, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType t) t).intro1P
+--         let (fv, mv) ← mv.intro1P
+--         let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv xt (.mvar xmv)
+--         let r ← xmv.rewrite (← xmv.getType) (.fvar xfv)
+--         return loop mv
+--       else
+--         return _
+        
+
+--         return mv
+
+
+
+
+  let mut current_lhs := lhs
+  let mut next := lhs.getAppArgs[0]!
+  while current_lhs.isApp do
+    let ar := current_lhs.getAppArgs
+    for t in ar do
+      current_lhs := t
+    
+      logInfo m! "{current_lhs}"
+      
+    
+
+
+
+
+  
+  
+  
+    
+  return mv
+  
+
+
+
+
+
 syntax (name := arr) "arr" : tactic
 
 open Elab Tactic in
@@ -211,13 +284,18 @@ open Elab Tactic in
   let mut mv ← Tactic.getMainGoal
   while (← mv.getType).isArrow do
     (_, mv) ← mv.intro (← newHypName mv)
-  let mvs' ← arrClosure mv
-  let mut mvs := []
-  for mv' in mvs' do
-    try
-      mv'.contradiction
-    catch _ =>
-      mvs := mv' :: mvs
-  Tactic.replaceMainGoal mvs
-
+  -- let mvs' ← arrClosure mv
+  -- let mut mvs := []
+  -- for mv' in mvs' do
+  --   try
+  --     mv'.contradiction
+  --   catch _ =>
+  --     mvs := mv' :: mvs
+  -- Tactic.replaceMainGoal mvs
+  for fv in (← mv.getDecl).lctx.getFVarIds do
+    mv.withContext do
+    logInfo m!"{Expr.fvar fv}" 
+  logInfo m!"Array size {Lean.mkNatLit (← mv.getDecl).lctx.getFVarIds.size}"
+  mv ← flat mv (← mv.getDecl).lctx.getFVarIds[9]!
+  Tactic.replaceMainGoal [mv]
 end Lean.Meta
