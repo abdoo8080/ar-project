@@ -1,17 +1,24 @@
+/-- Encoding of arrays in Lean. It is defined to be `opaque` to ensure that we only use the
+    declared operations and axioms to reason about arrays. -/
 opaque A : (I : Sort u₁) → (E : Sort u₂) → Sort (max u₁ u₂)
 
 namespace A
 
 variable {I} [Nonempty I] {E} [Nonempty E] [Nonempty (A I E)]
 
+/-- The `read` operation for Arrays. It is defined to be `opaque` because its semantics are
+    provided by the axioms. -/
 noncomputable opaque read : A I E → I → E
 
+/-- The `write` operation for Arrays. It is defined to be `opaque` because its semantics are
+    provided by the axioms. -/
 noncomputable opaque write : A I E → I → E → A I E
 
 axiom rw1 : ∀ {a : A I E}, ∀ {i : I}, ∀ {v : E}, (a.write i v).read i = v
 
 axiom rw2 : ∀ {a : A I E}, ∀ {i j : I}, ∀ {v : E}, i ≠ j → (a.write i v).read j = a.read j
 
+/-- The extansionality axiom. -/
 axiom ex : ∀ {a b : A I E}, (∀ i : I, a.read i = b.read i) → a = b
 
 theorem contrapositive : (p → q) → ¬q → ¬p := fun hpq hnq hp => hnq (hpq hp)
@@ -22,24 +29,27 @@ theorem forall_eq_not_exists_not {p : α → Prop} : (∀ x, p x) = ¬ ∃ x, ¬
             | Or.inl hpx  => hpx
             | Or.inr hnpx => absurd ⟨x, hnpx⟩ henxnpx⟩
 
-theorem double_neg: (¬¬p) = p := 
-propext ⟨ match Classical.em (¬p) with
-| Or.inl g1 => fun h1  => absurd g1 h1
-| Or.inr _ => match Classical.em (p) with
-              | Or.inl g2 => fun _ => g2
-              | Or.inr g2 => fun x => absurd g2 x, 
-match Classical.em (¬p) with
-| Or.inl np => fun hp => absurd hp np 
-| Or.inr nnp => fun _ => nnp⟩ 
+theorem double_neg: (¬¬p) = p :=
+  propext ⟨match Classical.em (¬p) with
+    | Or.inl g1 => fun h1  => absurd g1 h1
+    | Or.inr _ => match Classical.em (p) with
+                    | Or.inl g2 => fun _ => g2
+                    | Or.inr g2 => fun x => absurd g2 x,
+  match Classical.em (¬p) with
+    | Or.inl np => fun hp => absurd hp np
+    | Or.inr nnp => fun _ => nnp⟩
 
+/-- Theorem proving `RIntro1` rule from the axioms. -/
 theorem r_intro1 {a b : A I E}: a = b.write i v → v = a.read i :=
   fun h => h ▸ Eq.symm rw1
 
+/-- Theorem proving `RIntro2` rule from the axioms. -/
 theorem r_intro2 {a b c : A I E} : a = c ∨ b = c → a = b.write i v → x = c.read j → i = j ∨ a.read j = b.read j :=
   fun _ hw _ => match Classical.em (i = j) with
   | Or.inl he => Or.inl he
   | Or.inr hne => Or.inr (hw ▸ rw2 hne)
 
+/-- Theorem proving `Ext` rule from the axioms. -/
 theorem ext {a b : A I E} : a ≠ b → ∃i, a.read i ≠ b.read i := fun hne =>
   double_neg (p := ∃ i, read a i ≠ read b i) ▸
   forall_eq_not_exists_not (p := (λ i => a.read i = b.read i)) ▸

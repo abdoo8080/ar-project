@@ -1,0 +1,37 @@
+; $ cvc5 --dag-thresh=0 --sygus-stream arr-grammar.sy
+; $ cvc5 --dag-thresh=0 --sygus-stream --sygus-enum=random --sygus-enum-random-p=0.5 arr-grammar.sy
+
+(set-logic AX)
+
+(declare-sort I 0)
+(declare-sort E 0)
+
+(define-sort A () (Array I E))
+
+(synth-fun f ((a1 A) (a2 A) (a3 A)
+              (i1 I) (i2 I) (i3 I)
+              (v1 E) (v2 E) (v3 E)) Bool
+  ((SB Bool) (SA A) (SI I) (SE E))
+  ((SB Bool ((and SB SB)
+             (= SA SA) (distinct SA SA)
+             (= SI SI) (distinct SI SI)
+             (= SE SE) (distinct SE SE)))
+    (SA A (a1 a2 a3 (store SA SI SE)))
+    (SI I (i1 i2 i3))
+    (SE E (v1 v2 v3 (select SA SI)))))
+
+(declare-var a1 A)
+(declare-var a2 A)
+(declare-var a3 A)
+
+(declare-var i1 I)
+(declare-var i2 I)
+(declare-var i3 I)
+
+(declare-var v1 E)
+(declare-var v2 E)
+(declare-var v3 E)
+
+(constraint (not (f a1 a2 a3 i1 i2 i3 v1 v2 v3)))
+
+(check-synth)

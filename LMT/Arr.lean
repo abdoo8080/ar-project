@@ -5,6 +5,7 @@ import Lean
 
 namespace Lean.Expr
 
+/-- Is `e` an equality or a disequality? -/
 @[inline] def eqne? (e : Expr) : Option (Expr × Expr × Expr) :=
   match e.eq? with
   | some (t, lhs, rhs) => some (t, lhs, rhs)
@@ -12,23 +13,27 @@ namespace Lean.Expr
     | some (t, lhs, rhs) => some (t, lhs, rhs)
     | _ => none
 
-@[inline] def eqFV? (e : Expr) : Option (Expr × Expr) :=
+/-- Is `e` an equality with a free variable in the rhs? -/
+@[inline] def eqFV? (e : Expr) : Option (Expr × Expr × Expr) :=
   match e.eq? with
-  | some (_, v, .fvar y) => some (v, .fvar y)
+  | some (t, v, .fvar y) => some (t, v, .fvar y)
   | _ => none
 
+/-- Is `e` a `read`? -/
 @[inline] def read? (e : Expr) : Option (Expr × Expr) :=
   if e.isAppOfArity `A.read 5 then
     some (e.getArg! 3, e.getArg! 4)
   else
     none
 
+/-- Is `e` a `write`? -/
 @[inline] def write? (e : Expr) : Option (Expr × Expr × Expr) :=
   if e.isAppOfArity `A.write 6 then
     some (e.getArg! 3, e.getArg! 4, e.getArg! 5)
   else
     none
 
+/-- Is `e` an equality with a `read` in the rhs? -/
 @[inline] def eqRead? (e : Expr) : Option (Expr × Expr × Expr) :=
   match e.eq? with
   | some (_, v, e) => match e.read? with
@@ -36,6 +41,7 @@ namespace Lean.Expr
     | _ => none
   | _ => none
 
+/-- Is `e` an equality with a `write` in the rhs? -/
 @[inline] def eqWrite? (e : Expr) : Option (Expr × Expr × Expr × Expr) :=
   match e.eq? with
   | some (_, a, e) => match e.write? with
@@ -47,12 +53,14 @@ end Lean.Expr
 
 namespace Lean.Meta
 
+/-- The Array monad. -/
 abbrev ArrM := BaseM
 
 namespace Arr
 
 open Lean Elab Tactic
 
+/-- Implements `RIntro1` rule. -/
 def applyRIntro1s (mv : MVarId) : ArrM MVarId := do
   let mut mv := mv
   for fv in (← mv.getDecl).lctx.getFVarIds do
@@ -67,14 +75,15 @@ where
       return (← (← mv.assert (← Base.newHypName) t p).intro1P).snd
     return mv
 
-abbrev CacheList := List (Expr × Expr × Expr × Expr)
+abbrev Cache := HashSet (Expr × Expr × Expr × Expr)
 
-def applyRIntro2 (mv : MVarId) (fv1 : FVarId) (fv2 : FVarId) (fv3 : FVarId) : StateT CacheList ArrM (List MVarId) := mv.withContext do
+/-- Implements `RIntro2` rule. -/
+def applyRIntro2 (mv : MVarId) (fv1 : FVarId) (fv2 : FVarId) (fv3 : FVarId) : StateT Cache ArrM (List MVarId) := mv.withContext do
   match (← fv1.getType).eq?, (← fv2.getType).eqWrite?, (← fv3.getType).eqRead? with
   | some (_, d, e), some (a, b, i, _), some (_, c, j) =>
     if (i != j) && (d == a || d == b) && e == c then
       if !(← get).contains (a, b, i, j) then
-        modify ((a, b, i, j) :: (b, a, i, j) :: ·)
+        modify (·.insert (a, b, i, j) |>.insert (b, a, i, j))
         let eq1 ← Meta.mkAppM ``Eq #[a, c]
         let eq2 ← Meta.mkAppM ``Eq #[b, c]
         let mut omv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Or #[eq1, eq2])).mvarId!
@@ -103,32 +112,26 @@ where
     let (fv, mv) ← mv.intro1P
     return (x, fv, mv)
   replaceLHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
-    let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
+    let some (_, lhs, _) := (← fv.getType).eq? | throwError "something went wrong..."
     let (x, xfv, mv) ← findFVOrCreate mv lhs
     mv.withContext do
-    let xt ← Meta.mkAppM ``Eq #[.fvar x, rhs]
-    let xmv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Eq #[← fv.getType, xt])).mvarId!
-    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv xt (.mvar xmv)
-    let r ← xmv.rewrite (← xmv.getType) (.fvar xfv)
-    let xmv ← xmv.replaceTargetEq r.eNew r.eqProof
-    xmv.refl
+    let r ← mv.rewrite (← fv.getType) (.fvar xfv) true (.pos [1])
+    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
     return (x, xfv, fv, mv)
   replaceRHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := mv.withContext do
-    let some (_, lhs, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
+    let some (_, _, rhs) := (← fv.getType).eq? | throwError "something went wrong..."
     let (y, yfv, mv) ← findFVOrCreate mv rhs
     mv.withContext do
-    let yt ← Meta.mkAppM ``Eq #[lhs, .fvar y]
-    let ymv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Eq #[← fv.getType, yt])).mvarId!
-    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv yt (.mvar ymv)
-    let r ← ymv.rewrite (← ymv.getType) (.fvar yfv)
-    let ymv ← ymv.replaceTargetEq r.eNew r.eqProof
-    ymv.refl
+    let r ← mv.rewrite (← fv.getType) (.fvar yfv) true (.pos [1])
+    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
     return (y, yfv, fv, mv)
 
+/-- Returns the cross product of two lists. -/
 def product (xs : List α) (ys : List β) : List (α × β) :=
   (xs.map (fun x => ys.map (fun y => (x, y)))).join
 
-partial def applyRIntro2s (cache : CacheList) (mv : MVarId) : ArrM (List MVarId) := do
+/-- Calls `RIntro2` multiple times. -/
+partial def applyRIntro2s (cache : Cache) (mv : MVarId) : ArrM (List MVarId) := do
   let fvs := (← mv.getDecl).lctx.getFVarIds.toList
   let eqFVs ← mv.withContext (eqFVs fvs)
   let eqReads ← mv.withContext (eqReads fvs)
@@ -144,60 +147,55 @@ partial def applyRIntro2s (cache : CacheList) (mv : MVarId) : ArrM (List MVarId)
   else
     return (← applyRIntro2s cache mvs[0]!) ++ (← applyRIntro2s cache mvs[1]!)
 where
-  eqFVs (fvs : List FVarId) := fvs.filterM (fun fv => return (← fv.getType).eqFV?.toBool)
+  eqFVs (fvs : List FVarId) := fvs.filterM fun fv => do
+    return (← fv.getType).eqFV? >>= (·.fst.getAppFn) matches some (Expr.const ``A _)
   eqReads (fvs : List FVarId) := fvs.filterM (fun fv => return (← fv.getType).eqRead?.toBool)
   eqWrites (fvs : List FVarId) := fvs.filterM (fun fv => return (← fv.getType).eqWrite?.toBool)
 
+/-- Implements `Ext` rule. -/
 def applyExt (mv : MVarId) (fv : FVarId) : ArrM MVarId := mv.withContext do
-  if (← fv.getType).ne? matches some _ then
-    let p ← Meta.mkAppM ``A.ext #[.fvar fv]
-    let t ← Meta.inferType p
-    let mut (fv, mv) ← (← mv.assert (← Base.newHypName) t p).intro1P
-    (_, fv, mv) ← introExists mv fv
-    (_, _, fv, mv) ← replaceLHS mv fv
-    (_, _, fv, mv) ← replaceRHS mv fv
-    return mv
+  let some (Expr.const ``A _) := (← fv.getType).ne? >>= (·.fst.getAppFn) | return mv
+  let p ← Meta.mkAppM ``A.ext #[.fvar fv]
+  let t ← Meta.inferType p
+  let mut (fv, mv) ← (← mv.assert (← Base.newHypName) t p).intro1P
+  (_, fv, mv) ← introExists mv fv
+  (_, _, fv, mv) ← replaceLHS mv fv
+  (_, _, fv, mv) ← replaceRHS mv fv
   return mv
 where
   introExists (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × MVarId) := do
     let #[sg] ← mv.cases fv #[⟨false, [← Base.newVarName, ← Base.newHypName]⟩] | throwError "exists intro failed."
     return (sg.fields[0]!.fvarId!, sg.fields[1]!.fvarId!, sg.mvarId)
   replaceLHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := do
-    let some (_, lhs, rhs) := (← mv.withContext fv.getType).ne? | throwError "replacing LHS of {Expr.fvar fv} failed."
+    let some (_, lhs, _) := (← mv.withContext fv.getType).ne? | throwError "replacing LHS of {Expr.fvar fv} failed."
     let (x, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType lhs) lhs).intro1P
     let (xfv, mv) ← mv.intro1P
     mv.withContext do
-    let xt ← Meta.mkAppM ``Ne #[.fvar x, rhs]
-    let xmv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Eq #[← fv.getType, xt])).mvarId!
-    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv xt (.mvar xmv)
-    let r ← xmv.rewrite (← xmv.getType) (.fvar xfv)
-    let xmv ← xmv.replaceTargetEq r.eNew r.eqProof
-    xmv.refl
+    let r ← mv.rewrite (← fv.getType) (.fvar xfv) true (.pos [1])
+    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
     return (x, xfv, fv, mv)
   replaceRHS (mv : MVarId) (fv : FVarId) : ArrM (FVarId × FVarId × FVarId × MVarId) := do
-    let some (_, lhs, rhs) := (← mv.withContext fv.getType).ne? | throwError "replacing RHS of {Expr.fvar fv} failed."
+    let some (_, _, rhs) := (← mv.withContext fv.getType).ne? | throwError "replacing RHS of {Expr.fvar fv} failed."
     let (y, mv) ← (← mv.assertExt (← Base.newVarName) (← Meta.inferType rhs) rhs).intro1P
     let (yfv, mv) ← mv.intro1P
     mv.withContext do
-    let yt ← Meta.mkAppM ``Ne #[lhs, .fvar y]
-    let ymv := (← Meta.mkFreshExprMVar (← Meta.mkAppM ``Eq #[← fv.getType, yt])).mvarId!
-    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv yt (.mvar ymv)
-    let r ← ymv.rewrite (← ymv.getType) (.fvar yfv)
-    let ymv ← ymv.replaceTargetEq r.eNew r.eqProof
-    ymv.refl
+    let r ← mv.rewrite (← fv.getType) (.fvar yfv) true (.pos [1])
+    let ⟨fv, mv, _⟩ ← mv.replaceLocalDecl fv r.eNew r.eqProof
     return (y, yfv, fv, mv)
 
+/-- Calls `Ext` multiple times. -/
 def applyExts (mv : MVarId) : ArrM MVarId := do
   let mut mv := mv
   for fv in (← mv.getDecl).lctx.getFVarIds do
     mv ← applyExt mv fv
   return mv
 
+/-- The "Array Closure" algorithm. -/
 def arrClosure (mv : MVarId) : ArrM (List MVarId) := do
   let mv ← (EUF.congrClosure mv).run' { }
   let mv ← applyExts mv
   let mv ← applyRIntro1s mv
-  let mvs' ← applyRIntro2s [] mv
+  let mvs' ← applyRIntro2s HashSet.empty mv
   let mut mvs := []
   for mv' in mvs' do
     let mv ← (EUF.congrClosure mv').run' { }
@@ -206,14 +204,18 @@ def arrClosure (mv : MVarId) : ArrM (List MVarId) := do
 
 end Arr
 
+/-- Stateless version of "Array Closure" algorithm. -/
 def arrClosure (mv : MVarId) : MetaM (List MVarId) := (Arr.arrClosure mv).run' { mv := mv }
 
+/-- Utility to generate a new name for a hypothesis. -/
 private def newHypName (mv : MVarId) : MetaM Name := do
   return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `hds
 
+/-- Utility to generate a new name for a variable. -/
 private def newVarName (mv : MVarId) : MetaM Name := do
   return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `x
 
+/-- Utility for flattening hypothesis in the Proof context. -/
 def flat (mv : MVarId) (fv : FVarId) : MetaM MVarId := mv.withContext do
   let fvt ← fv.getType
   if fvt.eqne?.isNone then
@@ -290,6 +292,7 @@ where
         flag := false
     return flag
 
+/-- Calls `flat` to a fixed point. -/
 def flats (mv : MVarId) : MetaM MVarId := do
   let mut i := 0
   let mut mv' := mv
@@ -302,9 +305,11 @@ def flats (mv : MVarId) : MetaM MVarId := do
       i := 0
   return mv
 
+/-- The `arr` tactic runs the Arrays decision procedure on the current goal. -/
 syntax (name := arr) "arr" : tactic
 
 open Elab Tactic in
+/-- Implementation of the `arr` tactic. -/
 @[tactic arr] def evalArr : Tactic := fun _ => do
   let mut mv ← Tactic.getMainGoal
   while (← mv.getType).isArrow do

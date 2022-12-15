@@ -2,8 +2,12 @@ import LMT.Base
 import Lean
 
 open Lean in
+/-- Disjoint set datastructure. The datastructure is implemented as a forest of 
+    trees (equivalence classes). Each node (variable) is mapped to its parent
+    in the equivalence class and a proof that the node is equal to its parent. -/
 def Lean.DisjointSet := HashMap FVarId (FVarId × Expr)
 
+/-- Tests if two disjoint sets are equal. Useful for fixedpoint computations.  -/
 private def Lean.DisjointSet.beq (lhs rhs : DisjointSet) : Bool := Id.run do
   let (_, flag) ← lhs.forM predicate true
   return flag
@@ -18,24 +22,31 @@ namespace Lean.Meta
 
 open Lean
 
+/-- State of the EUF monad. -/
 structure EUF.State where
-  -- Disjoint set implementing congruence closure with proofs.
+  /-- Disjoint set used to implement congruence closure with proofs. -/
   ds : DisjointSet := HashMap.empty
 
+/-- The EUF Monad. -/
 abbrev EUFM := StateT EUF.State BaseM
 
 namespace EUF
 
+/-- Returns all free variables in the disjoint set. -/
 def fvars : EUFM (List FVarId) := return (← get).ds.toList.map (·.1)
 
+/-- Checks if a free variable is in the disjoint set. -/
 def contains (fv : FVarId) : EUFM Bool := return HashMap.contains (← get).ds fv
 
+/-- Adds a free variable to the disjoint set. -/
 def insert (fv : FVarId) : EUFM Unit := do
   let mut ⟨ds⟩ ← get
   if !ds.contains fv then
     let p ← Meta.mkAppM `Eq.refl #[.fvar fv]
     set ({ds := HashMap.insert ds fv (fv, p)} : State)
 
+/-- Finds the representative element of the equivalence class for `fv` and generates a proof of
+    their equality. -/
 partial def find! (fv : FVarId) : EUFM (FVarId × Expr) := do
   let mut fv₂ := fv
   let mut (fv₁, p₂₁) := HashMap.find! (← get).ds fv₂
@@ -51,11 +62,13 @@ partial def find! (fv : FVarId) : EUFM (FVarId × Expr) := do
     p₂₁ := .mvar mv
   return (fv₁, p₂₁)
 
+/-- Panic-free version of `find!`. -/
 def find (fv : FVarId) : EUFM (FVarId × Expr) := do
   if !(← contains fv) then
     insert fv
   find! fv
 
+/-- Joins the equivalence classes of `fv₁` and `fv₂`. -/
 def union! (fv₂ : FVarId) (fv₁ : FVarId) (p₂₁ : Expr) : EUFM Unit := do
   let (fv₁', p₁₁) ← find! fv₁
   let (fv₂', p₂₂) ← find! fv₂
@@ -68,6 +81,7 @@ def union! (fv₂ : FVarId) (fv₁ : FVarId) (p₂₁ : Expr) : EUFM Unit := do
     mv'.assign p₂₁
     set ({ds := HashMap.insert (← get).ds fv₂' (fv₁', .mvar mv)} : State)
 
+/-- Panic-free version of `union!`. -/
 def union (fv₂ : FVarId) (fv₁ : FVarId) (p₂₁ : Expr) : EUFM Unit := do
   if !(← contains fv₁) then
     insert fv₁
@@ -75,6 +89,7 @@ def union (fv₂ : FVarId) (fv₁ : FVarId) (p₂₁ : Expr) : EUFM Unit := do
     insert fv₂
   union! fv₂ fv₁ p₂₁
 
+/-- Updates the Lean Proof Context with all the found equalities stored in the disjoint set. -/
 def updateCtx (mv : MVarId) : EUFM MVarId := mv.withContext do
   let mut mv := mv
   let mut cache := HashSet.empty
@@ -99,6 +114,7 @@ def updateCtx (mv : MVarId) : EUFM MVarId := mv.withContext do
           (_, mv) ← (← mv.assert (← Base.newHypName) eq (.mvar mv')).intro1P
   return mv
 
+/-- Converts the disjoint set into a message for printing. -/
 private def toMessageData (ds : DisjointSet) : MessageData :=
   let m := ds.fold (fun s fv₂ _ => Id.run do
     let mut s := s ++ m!"{Expr.fvar fv₂}"
@@ -113,6 +129,7 @@ private def toMessageData (ds : DisjointSet) : MessageData :=
 
 instance : ToMessageData DisjointSet := ⟨toMessageData⟩
 
+/-- Implmentation of the Congruence Closure procedure. -/
 def congrClosure (mv : MVarId) : EUFM MVarId := mv.withContext do
   let mut mv := mv
   let mut posEqns := []
@@ -165,16 +182,20 @@ where
 
 end EUF
 
+/-- Stateless version of the `EUF.congrClosure`. -/
 def congrClosure (mv : MVarId) : MetaM MVarId := EUF.congrClosure mv
   |>.run' { }
   |>.run' { mv := mv }
 
+/-- Utility to generate a new name for a hypothesis. -/
 private def newHypName (mv : MVarId) : MetaM Name := do
   return Lean.LocalContext.getUnusedName (← mv.getDecl).lctx `h
 
+/-- The `euf` tactic runs the Congrunce Closure algorithm on the current goal. -/
 syntax (name := euf) "euf" : tactic
 
 open Elab Tactic in
+/-- Implementation of the `euf` tactic. -/
 @[tactic euf] def evalEuf : Tactic := fun _ => do
   let mut mv ← Tactic.getMainGoal
   while (← mv.getType).isArrow do
